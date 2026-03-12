@@ -109,7 +109,7 @@ async def admin_actions(
                 await bot.send_message(
                     chat_id=b.user_id,
                     text=(
-                        "<b>Ваша запись отменена администратором.</b>\n\n"
+                        "<b>Ваша запись отменена мастером.</b>\n\n"
                         f"📅 <b>Дата:</b> {b.day}\n"
                         f"⏰ <b>Время:</b> {b.time}\n"
                     ),
@@ -322,7 +322,7 @@ async def admin_enter_day(
                     await bot.send_message(
                         chat_id=b.user_id,
                         text=(
-                            "<b>Ваша запись отменена администратором.</b>\n\n"
+                            "<b>Ваша запись отменена мастером.</b>\n\n"
                             f"📅 <b>Дата:</b> {b.day}\n"
                             f"⏰ <b>Время:</b> {b.time}\n"
                         ),
@@ -356,15 +356,24 @@ async def admin_enter_day(
         return
 
     if action == "move_booking":
-        # Сохраняем новый день и переходим к выбору времени
+        # Для переноса показываем только реально свободные слоты
+        free_times = await repo.list_free_times(day_str)
+        if not free_times:
+            await message.answer(
+                "На эту дату нет свободных слотов для переноса. Выберите другой день.",
+                parse_mode="HTML",
+                reply_markup=admin_menu_kb(),
+            )
+            await state.clear()
+            return
+
         await state.update_data(day=day_str)
         await state.set_state(AdminStates.waiting_time)
         await message.answer(
             f"Новая дата: <b>{day_str}</b>\n\n"
-            "Введите новое время в формате <code>HH:MM</code> (например, <code>12:30</code>)\n"
-            "или выберите из предложенных:",
+            "Выберите доступное время для переноса:",
             parse_mode="HTML",
-            reply_markup=admin_time_suggestions_kb(_common_time_suggestions()),
+            reply_markup=admin_time_suggestions_kb(free_times),
         )
         return
 
@@ -406,7 +415,7 @@ async def admin_enter_time(message: Message, state: FSMContext, bot: Bot, repo: 
                     await bot.send_message(
                         chat_id=b.user_id,
                         text=(
-                            "<b>Ваша запись отменена администратором.</b>\n\n"
+                            "<b>Ваша запись отменена мастером.</b>\n\n"
                             f"📅 <b>Дата:</b> {b.day}\n"
                             f"⏰ <b>Время:</b> {b.time}\n"
                         ),
@@ -495,7 +504,7 @@ async def admin_cancel_by_id(message: Message, state: FSMContext, bot: Bot, repo
             await bot.send_message(
                 chat_id=b.user_id,
                 text=(
-                    "<b>Ваша запись отменена администратором.</b>\n\n"
+                    "<b>Ваша запись отменена мастером.</b>\n\n"
                     f"📅 <b>Дата:</b> {b.day}\n"
                     f"⏰ <b>Время:</b> {b.time}\n"
                 ),
@@ -633,7 +642,7 @@ async def admin_calendar_actions(call: CallbackQuery, callback_data: AdminCalCb,
                         await bot.send_message(
                             chat_id=b.user_id,
                             text=(
-                                "<b>Ваша запись отменена администратором.</b>\n\n"
+                                "<b>Ваша запись отменена мастером.</b>\n\n"
                                 f"📅 <b>Дата:</b> {b.day}\n"
                                 f"⏰ <b>Время:</b> {b.time}\n"
                             ),
@@ -667,14 +676,25 @@ async def admin_calendar_actions(call: CallbackQuery, callback_data: AdminCalCb,
             return
 
         if action == "move_booking":
-            # Сохраняем выбранный день и переходим к выбору времени для переноса
+            # Для переноса показываем только реально свободные слоты
+            free_times = await repo.list_free_times(day_str)
+            if not free_times:
+                await call.message.answer(
+                    "На эту дату нет свободных слотов для переноса. Выберите другой день.",
+                    parse_mode="HTML",
+                    reply_markup=admin_menu_kb(),
+                )
+                await state.clear()
+                await call.answer()
+                return
+
             await state.update_data(day=day_str)
             await state.set_state(AdminStates.waiting_time)
             await call.message.answer(
                 f"Новая дата: <b>{day_str}</b>\n\n"
-                "Введите новое время в формате <code>HH:MM</code> или выберите из предложенных:",
+                "Выберите доступное время для переноса:",
                 parse_mode="HTML",
-                reply_markup=admin_time_suggestions_kb(_common_time_suggestions()),
+                reply_markup=admin_time_suggestions_kb(free_times),
             )
             return
 
@@ -724,7 +744,7 @@ async def admin_time_pick(call: CallbackQuery, callback_data: AdminTimeCb, state
                     await bot.send_message(
                         chat_id=b.user_id,
                         text=(
-                            "<b>Ваша запись отменена администратором.</b>\n\n"
+                            "<b>Ваша запись отменена мастером.</b>\n\n"
                             f"📅 <b>Дата:</b> {b.day}\n"
                             f"⏰ <b>Время:</b> {b.time}\n"
                         ),

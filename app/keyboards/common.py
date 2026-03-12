@@ -15,7 +15,8 @@ def main_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
     kb.button(text="📅 Записаться", callback_data="menu:book")
     kb.button(text="🧾 Моя запись", callback_data="menu:my")
     kb.button(text="❌ Отменить запись", callback_data="menu:cancel")
-    kb.adjust(2, 1)
+    kb.button(text="🔁 Перенести запись", callback_data="menu:reschedule")
+    kb.adjust(2, 2)
 
     kb.button(text="💰 Прайсы", callback_data="menu:prices")
     kb.button(text="🖼 Портфолио", callback_data="menu:portfolio")

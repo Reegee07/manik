@@ -86,6 +86,50 @@ async def menu_book(call: CallbackQuery, state: FSMContext, bot: Bot, config: Co
     await call.answer()
 
 
+@router.callback_query(F.data == "menu:reschedule")
+async def menu_reschedule(
+    call: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    config: Config,
+    repo: Repo,
+) -> None:
+    await state.clear()
+    b = await repo.get_active_booking_by_user(call.from_user.id)
+    if not b:
+        await call.message.answer("У вас нет активной записи, которую можно перенести.")
+        await call.answer()
+        return
+
+    # Информация о правиле переноса и предупреждение про 24 часа
+    from datetime import datetime, timedelta
+    from app.services.datetime_utils import parse_dt
+
+    try:
+        dt_booking = parse_dt(b.day, b.time)
+        now = datetime.now()
+        diff = dt_booking - now
+        base_text = (
+            "ℹ️ Обратите внимание: по правилам мастера перенос записи возможен не позднее чем за 24 часа.\n"
+            "При переносе позже предоплата может не возвращаться.\n\n"
+        )
+        if diff < timedelta(hours=24):
+            text = (
+                "⚠️ До вашей записи осталось меньше 24 часов.\n"
+                "По правилам мастера предоплата может не возвращаться при переносе или отмене.\n\n"
+            ) + base_text
+        else:
+            text = base_text
+        await call.message.answer(text, parse_mode="HTML")
+    except Exception:
+        pass
+
+    await state.set_state(BookingStates.choosing_day)
+    await state.update_data(mode="reschedule", move_booking_id=b.id)
+    await _show_calendar(call, state, repo)
+    await call.answer()
+
+
 @router.callback_query(F.data == "sub:check")
 async def subscription_check(call: CallbackQuery, bot: Bot, config: Config, state: FSMContext) -> None:
     if not await is_subscribed(bot, config.channel_id, call.from_user.id):
@@ -190,21 +234,22 @@ async def back_to_calendar(call: CallbackQuery, state: FSMContext, repo: Repo) -
 
 
 @router.callback_query(BookingCb.filter(F.action == "time"))
-async def choose_time(call: CallbackQuery, callback_data: BookingCb, state: FSMContext, repo: Repo) -> None:
+async def choose_time(
+    call: CallbackQuery,
+    callback_data: BookingCb,
+    state: FSMContext,
+    repo: Repo,
+    bot: Bot,
+    config: Config,
+    scheduler: AsyncIOScheduler,
+) -> None:
     cur_state = await state.get_state()
     if cur_state != BookingStates.choosing_time.state:
         await call.answer()
         return
 
-    # Повторная защита от мультизаписей
-    if await repo.get_active_booking_by_user(call.from_user.id):
-        await call.message.answer(
-            "<b>У вас уже есть активная запись.</b>\nСначала отмените её.",
-            parse_mode="HTML",
-        )
-        await state.clear()
-        await call.answer()
-        return
+    data = await state.get_data()
+    mode = data.get("mode") or "new"
 
     # Декодируем время из callback_data (":" нельзя хранить напрямую)
     slot_time = callback_data.time.replace("-", ":")
@@ -213,6 +258,88 @@ async def choose_time(call: CallbackQuery, callback_data: BookingCb, state: FSMC
     times = await repo.list_free_times(callback_data.day)
     if slot_time not in times:
         await call.answer("Слот уже заняли. Выберите другое время.", show_alert=True)
+        return
+
+    if mode == "reschedule":
+        booking_id = data.get("move_booking_id")
+        if not booking_id:
+            await call.message.answer("ID записи не найден. Начните заново.", parse_mode="HTML")
+            await state.clear()
+            await call.answer()
+            return
+        try:
+            await repo.move_booking(booking_id, callback_data.day, slot_time)
+        except ValueError as e:
+            await call.message.answer(
+                f"Не удалось перенести запись: {e}", parse_mode="HTML"
+            )
+            await state.clear()
+            await call.answer()
+            return
+
+        b = await repo.get_booking(booking_id)
+        if not b:
+            await call.message.answer("Запись не найдена после переноса.", parse_mode="HTML")
+            await state.clear()
+            await call.answer()
+            return
+
+        # Обновляем напоминание
+        await remove_reminder(scheduler, repo, booking_id)
+        try:
+            await schedule_reminder_if_needed(scheduler, repo, bot, b)
+        except Exception:
+            pass
+
+        # Уведомляем клиента
+        try:
+            await bot.send_message(
+                chat_id=b.user_id,
+                text=(
+                    "<b>Ваша запись перенесена.</b>\n\n"
+                    f"📅 <b>Новая дата:</b> {b.day}\n"
+                    f"⏰ <b>Новое время:</b> {b.time}\n"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        # Уведомляем админа
+        try:
+            from app.services.formatting import fmt_booking_for_admin
+
+            text_admin = fmt_booking_for_admin(
+                booking_id=booking_id,
+                user_id=b.user_id,
+                username=call.from_user.username if call.from_user else None,
+                day=b.day,
+                time=b.time,
+                name=b.name,
+                phone=b.phone,
+                title="Запись перенесена клиентом",
+            )
+            await bot.send_message(chat_id=config.admin_id, text=text_admin, parse_mode="HTML")
+        except Exception:
+            pass
+
+        await call.message.edit_text(
+            f"🔁 Ваша запись перенесена на <b>{b.day} {b.time}</b>.",
+            parse_mode="HTML",
+        )
+        await state.clear()
+        await call.answer()
+        return
+
+    # Обычный сценарий новой записи
+    # Повторная защита от мультизаписей
+    if await repo.get_active_booking_by_user(call.from_user.id):
+        await call.message.answer(
+            "<b>У вас уже есть активная запись.</b>\nСначала отмените её.",
+            parse_mode="HTML",
+        )
+        await state.clear()
+        await call.answer()
         return
 
     await state.update_data(day=callback_data.day, time=slot_time)
